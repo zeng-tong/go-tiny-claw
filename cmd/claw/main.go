@@ -53,7 +53,7 @@ func main() {
 	r.Register(tools.NewWriteFileTool(workDir))
 	r.Register(tools.NewBashTool(workDir))
 	r.Register(tools.NewEditFileTool(workDir))
-	eng := engine.NewAgentEngine(p, r, workDir, true)
+	eng := engine.NewAgentEngine(p, r, workDir, false)
 
 	// 2. 初始化飞书 Bot 调度器
 	bot := feishu.NewFeishuBot(eng)

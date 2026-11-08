@@ -27,7 +27,7 @@ func NewAgentEngine(provider provider.LLMProvider, registry tools.Registry, work
 }
 
 func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Reporter) error {
-	log.Printf("[Engine] Run started, lock workdir: %s\n]", e.WorkDir)
+	log.Printf("[Engine] Run started, lock workdir: %s", e.WorkDir)
 	log.Printf("[Engine] 慢思考模式(thinking phase): %v", e.EnableThinking)
 	// 真实场景中，这里会由动态 Prompt 组装器加载 AGENTS.md ，目前先硬编码
 	contextHistory := []schema.Message{
@@ -56,61 +56,60 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Repor
 			}
 			thinkResp, err := e.provider.Generate(ctx, contextHistory, nil)
 			if err != nil {
-				return fmt.Errorf("[Engine] Thinking 生成失败 %w", err)
+				return fmt.Errorf("[Engine] Thinking 阶段失败 %w", err)
 			}
 			if thinkResp.Content != "" {
-				//log.Printf("🧠 [内部思考 Trace]: %s\n", thinkResp.Content)
+				log.Printf("🧠 [内部思考 Trace]: %s\n", thinkResp.Content)
 				contextHistory = append(contextHistory, *thinkResp)
 			}
 		}
 
 		// ================= Phase 2: Action =================
 		//log.Println("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...")
-		responseMsg, err := e.provider.Generate(ctx, contextHistory, availableTools)
+		actionResp, err := e.provider.Generate(ctx, contextHistory, availableTools)
 		if err != nil {
-			return fmt.Errorf("模型生成失败: %w", err)
+			return fmt.Errorf("Action 阶段失败: %w", err)
 		}
 
-		contextHistory = append(contextHistory, *responseMsg)
+		contextHistory = append(contextHistory, *actionResp)
 
-		if responseMsg.Content != "" && reporter != nil {
-			//log.Printf("[🧠模型对外输出]: %s\n", responseMsg.Content)
-			reporter.OnMessage(ctx, responseMsg.Content)
+		if actionResp.Content != "" && reporter != nil {
+			log.Printf("[🧠模型对外输出]: %s\n", actionResp.Content)
+			reporter.OnMessage(ctx, actionResp.Content)
 		}
 
-		if len(responseMsg.ToolCalls) == 0 {
-			//log.Println("[Engine] 任务完成，退出循环。")
+		if len(actionResp.ToolCalls) == 0 {
+			log.Println("[Engine] 任务完成，退出循环。")
 			break
 		}
 
-		//log.Printf("[Engine] 模型请求调用 %d 个工具...\n", len(responseMsg.ToolCalls))
-		observationMsgs := make([]schema.Message, len(responseMsg.ToolCalls))
+		//log.Printf("[Engine] 模型请求调用 %d 个工具...\n", len(actionResp.ToolCalls))
+		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 
 		var wg sync.WaitGroup
-		for i, call := range responseMsg.ToolCalls {
+		for i, call := range actionResp.ToolCalls {
 			wg.Add(1)
 			go func(idx int, call schema.ToolCall) {
 				defer wg.Done()
-				//log.Printf(" -> [Go-%d] 🛠️ 触发并行执行: %s\n", idx, call.Name)
-				//log.Printf(" -> 🛠️ 执行工具: %s, 参数: %s\n", call.Name, string(call.Arguments))
-				reporter.OnToolCall(ctx, call.Name, string(call.Arguments))
+				if reporter != nil {
+					reporter.OnToolCall(ctx, call.Name, string(call.Arguments))
+				}
 				result := e.registry.Execute(ctx, call)
 				if reporter != nil {
 					displayOut := result.Output
 					if len(displayOut) > 200 {
 						displayOut = displayOut[:200] + "...(已截断)"
 					}
-					reporter.OnToolCall(ctx, call.Name, string(displayOut))
+					reporter.OnToolResult(ctx, call.Name, displayOut, result.IsError)
 				}
 				// 将工具执行的观察结果封装为 User Message 追加到上下文中
 				// 注意：TooCallID 必须携带
-				observationMsg := schema.Message{
+				//contextHistory = append(contextHistory, observationMsg)
+				observationMsgs[i] = schema.Message{
 					Role:       schema.RoleUser,
 					Content:    result.Output,
 					ToolCallID: call.ID,
 				}
-				//contextHistory = append(contextHistory, observationMsg)
-				observationMsgs[i] = observationMsg
 			}(i, call)
 		}
 		wg.Wait()

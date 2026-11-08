@@ -82,7 +82,10 @@ func (r *FeishuReporter) sendMsg(text string) {
 		ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
 		Body(larkim.NewCreateMessageReqBodyBuilder().ReceiveId(r.chatId).MsgType(larkim.MsgTypeText).Content(contentStr).Build()).
 		Build()
-	_, _ = r.client.Im.Message.Create(context.Background(), msgReq)
+	_, err := r.client.Im.Message.Create(context.Background(), msgReq)
+	if err != nil {
+		log.Printf("[Feishu] 消息[%s]发送失败: %v", text, err)
+	}
 }
 
 func (r *FeishuReporter) OnThinking(ctx context.Context) {
