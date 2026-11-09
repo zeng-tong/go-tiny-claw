@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go-tiny-claw/internal/context/schema"
+	"go-tiny-claw/internal/schema"
 	"io"
 	"os"
 	"path/filepath"

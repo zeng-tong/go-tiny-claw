@@ -2,7 +2,7 @@ package provider
 
 import (
 	"context"
-	"go-tiny-claw/internal/context/schema"
+	"go-tiny-claw/internal/schema"
 )
 
 type LLMProvider interface {

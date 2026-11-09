@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go-tiny-claw/internal/context/schema"
+	"go-tiny-claw/internal/schema"
 	"os/exec"
 	"time"
 )
