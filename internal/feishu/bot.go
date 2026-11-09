@@ -7,7 +7,9 @@ import (
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	"github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+	ctxpkg "go-tiny-claw/internal/context"
 	"go-tiny-claw/internal/engine"
+	"go-tiny-claw/internal/schema"
 	"log"
 	"os"
 	"strings"
@@ -19,9 +21,11 @@ type FeishuBot struct {
 	appID     string
 	appSecret string
 	engine    *engine.AgentEngine // 持有核心引擎引用
+	sess      *ctxpkg.Session
+	r         *FeishuReporter
 }
 
-func NewFeishuBot(eng *engine.AgentEngine) *FeishuBot {
+func NewFeishuBot(eng *engine.AgentEngine, sess *ctxpkg.Session) *FeishuBot {
 	appID := os.Getenv("FEISHU_APP_ID")
 	appSecret := os.Getenv("FEISHU_APP_SECRET")
 	if appID == "" || appSecret == "" {
@@ -32,12 +36,14 @@ func NewFeishuBot(eng *engine.AgentEngine) *FeishuBot {
 		appID:     appID,
 		appSecret: appSecret,
 		engine:    eng,
+		sess:      sess,
 	}
 }
 
 func (e *FeishuBot) GetEventDispatcher() *dispatcher.EventDispatcher {
 	encryptKey := os.Getenv("FEISHU_ENCRYPT_KEY")
 	verifyToken := os.Getenv("FEISHU_VERIFY_TOKEN")
+
 	handler := dispatcher.NewEventDispatcher(verifyToken, encryptKey).OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 		contentStr := *event.Event.Message.Content
 		contentStr = strings.TrimPrefix(contentStr, `{"text":"`)
@@ -45,6 +51,23 @@ func (e *FeishuBot) GetEventDispatcher() *dispatcher.EventDispatcher {
 
 		chatID := *event.Event.Message.ChatId
 		log.Printf("[Feishu] 收到会话 %s 消息: %s\n", chatID, contentStr)
+
+		// 人工审批口令
+		if strings.HasPrefix(contentStr, `approve `) {
+			taskID := strings.TrimPrefix(contentStr, `approve `)
+			taskID = strings.TrimSpace(taskID)
+			GlobalApprovalManager.ResolveApproval(taskID, true, "人类管理员已批准操作")
+			log.Printf("[Feishu] 会话 %s: ✅ 已为您批准任务 %s", chatID, taskID)
+			return nil
+		}
+		if strings.HasPrefix(contentStr, `reject `) {
+			taskID := strings.TrimPrefix(contentStr, `reject `)
+			taskID = strings.TrimSpace(taskID)
+			GlobalApprovalManager.ResolveApproval(taskID, false, "人类管理员已拒绝操作")
+			log.Printf("[Feishu] 会话 %s: 🚫 已拒绝任务 %s", chatID, taskID)
+			return nil
+		}
+		// 不是审批命令，则正常对话，启动新的 agent 处理。
 		// [驾驭并发]： 收到消息后，不能阻塞 http 回调
 		go e.handlerAgentRun(chatID, contentStr)
 		return nil
@@ -54,12 +77,18 @@ func (e *FeishuBot) GetEventDispatcher() *dispatcher.EventDispatcher {
 	return handler
 }
 
+func (e *FeishuBot) Reporter() *FeishuReporter {
+	return e.r
+}
+
 func (e *FeishuBot) handlerAgentRun(chatID string, promopt string) {
 	reporter := &FeishuReporter{
 		client: e.client,
 		chatId: chatID,
 	}
-	err := e.engine.Run(context.Background(), promopt, reporter)
+	e.r = reporter
+	e.sess.Append(schema.Message{Role: schema.RoleUser, Content: promopt})
+	err := e.engine.Run(context.Background(), e.sess, reporter)
 	if err != nil {
 		reporter.sendMsg(fmt.Sprintf("❌ Agent 运行崩溃: %v", err))
 	}

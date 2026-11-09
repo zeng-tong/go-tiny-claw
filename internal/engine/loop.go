@@ -19,6 +19,7 @@ type AgentEngine struct {
 	compactor      *ctxpkg.Compactor
 	planMode       bool
 	recovery       *ctxpkg.RecoveryManager
+	injector       *ReminderInjector
 }
 
 func NewAgentEngine(provider provider.LLMProvider, registry tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
@@ -28,6 +29,7 @@ func NewAgentEngine(provider provider.LLMProvider, registry tools.Registry, enab
 		compactor: ctxpkg.NewCompactor(3000, 6),
 		planMode:  planMode,
 		recovery:  ctxpkg.NewRecoveryManager(),
+		injector:  NewReminderInjector(),
 	}
 }
 
@@ -96,8 +98,12 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 
 		//log.Printf("[Engine] 模型请求调用 %d 个工具...\n", len(actionResp.ToolCalls))
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
-
 		var wg sync.WaitGroup
+
+		// 用于收集本轮执行的工具，供 Reminder 探测器分析.
+		toolCalls := make([]schema.ToolCall, len(actionResp.ToolCalls))
+		toolResults := make([]schema.ToolResult, len(actionResp.ToolCalls))
+
 		for i, call := range actionResp.ToolCalls {
 			wg.Add(1)
 			go func(idx int, call schema.ToolCall) {
@@ -121,15 +127,25 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 				}
 				// 将工具执行的观察结果封装为 User Message 追加到上下文中
 				// 注意：TooCallID 必须携带
-				observationMsgs[i] = schema.Message{
+				observationMsgs[idx] = schema.Message{
 					Role:       schema.RoleUser,
 					Content:    result.Output,
 					ToolCallID: call.ID,
 				}
+				toolCalls[idx] = call
+				toolResults[i] = result
 			}(i, call)
 		}
 		wg.Wait()
+		// 1. 先将普通的工具执行结果存入 Session
 		session.Append(observationMsgs...)
+		// 2. 【核心防线】：在准备进入下一轮之前，进行死循环探测！
+		for i := 0; i < len(observationMsgs); i++ {
+			reminderMsg := e.injector.CheckAndInject(toolCalls[i], toolResults[i])
+			if reminderMsg != nil {
+				session.Append(*reminderMsg)
+			}
+		}
 	}
 	return nil
 }
