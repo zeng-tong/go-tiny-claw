@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
-	"fmt"
 	ctxpkg "go-tiny-claw/internal/context"
 	"go-tiny-claw/internal/engine"
 	"go-tiny-claw/internal/provider"
@@ -101,12 +99,12 @@ func main() {
 // cmd/claw/main.go
 
 func main() {
-	promptPtr := flag.String("prompt", "", "要交给 Agent 执行的任务描述")
+	/*promptPtr := flag.String("prompt", "", "要交给 Agent 执行的任务描述")
 	flag.Parse()
 	if *promptPtr == "" {
 		fmt.Println("用法: go run cmd/claw/main.go -prompt \"你的任务指令\"")
 		os.Exit(1)
-	}
+	}*/
 	if os.Getenv("GLM_API_KEY") == "" {
 		log.Fatal("请先导出 GLM_API_KEY 环境变量")
 	}
@@ -121,19 +119,33 @@ func main() {
 	registry.Register(tools.NewEditFileTool(workDir))
 
 	// 实例化引擎并开启计划模式 (PlanMode=true)
-	eng := engine.NewAgentEngine(llmProvider, registry, false, true)
+	eng := engine.NewAgentEngine(llmProvider, registry, false, false)
 	reporter := engine.NewTerminalReporter()
 
 	// 我们使用一个固定的 SessionID，以便在多次运行之间共享基于内存的“短期工作记忆”。
 	// (在真实的 CLI 中，如果进程重启，Session 的内存历史其实是丢失的。
 	// 但这正是我们要演示的重点：即便短期内存丢失，只要 TODO.md 还在，任务就能继续！)
-	sessionID := "task_web_server_01"
+	sessionID := "test_recovery_001"
 	sess := ctxpkg.GlobalSessionManager.GetOrCreate(sessionID, workDir)
 
-	log.Printf("\n>>> 🚀 收到指令: %s\n", *promptPtr)
-
+	// 这是一个巨大的陷阱指令：
+	// 我们不给它查看文件的机会，直接命令它凭初始上下文去修改文件，目的是诱发 old_text 不匹配的错误。
+	prompt := `
+    我当前目录下有一个 auth.go 文件。
+    请修改 auth.go 中的 login 函数。
+    请直接使用 edit_file 工具替换下面的代码块，将判断条件改为同时允许"admin"、"root"和"guest"三种用户登录：
+    // 鉴权入口函数
+    func login(user string) bool {
+        // 检查用户名
+        if user == "admin" {
+            return true
+        }
+        return false
+    }
+	`
+	log.Printf("\n>>> 🚀 收到指令: %s\n", prompt)
 	// 将用户的 Prompt 压入 Session
-	sess.Append(schema.Message{Role: schema.RoleUser, Content: *promptPtr})
+	sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
 
 	// 唤醒引擎执行
 	err := eng.Run(context.Background(), sess, reporter)

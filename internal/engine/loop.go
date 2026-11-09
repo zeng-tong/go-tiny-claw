@@ -8,6 +8,7 @@ import (
 	"go-tiny-claw/internal/schema"
 	"go-tiny-claw/internal/tools"
 	"log"
+	"strings"
 	"sync"
 )
 
@@ -17,6 +18,7 @@ type AgentEngine struct {
 	EnableThinking bool
 	compactor      *ctxpkg.Compactor
 	planMode       bool
+	recovery       *ctxpkg.RecoveryManager
 }
 
 func NewAgentEngine(provider provider.LLMProvider, registry tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
@@ -25,6 +27,7 @@ func NewAgentEngine(provider provider.LLMProvider, registry tools.Registry, enab
 		registry:  registry,
 		compactor: ctxpkg.NewCompactor(3000, 6),
 		planMode:  planMode,
+		recovery:  ctxpkg.NewRecoveryManager(),
 	}
 }
 
@@ -50,6 +53,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 		compactedContext := e.compactor.Compact(contextHistory)
 		// ================= Phase 1: Thinking =================
 		// 开启慢思考，不给任何工具。
+		var currentTurnThinkingContent string
 		if e.EnableThinking {
 			//log.Println("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
 			if reporter != nil {
@@ -63,6 +67,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 				log.Printf("🧠 [内部思考 Trace]: %s\n", thinkResp.Content)
 				session.Append(*thinkResp)
 				compactedContext = append(compactedContext, *thinkResp)
+				currentTurnThinkingContent = thinkResp.Content
 			}
 		}
 
@@ -72,9 +77,12 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 		if err != nil {
 			return fmt.Errorf("action 阶段失败: %w", err)
 		}
-
-		session.Append(*actionResp)
-		compactedContext = append(compactedContext, *actionResp)
+		finalAssistMsg := schema.Message{
+			Role:      schema.RoleAssistant,
+			Content:   strings.TrimSpace(currentTurnThinkingContent + "\n" + actionResp.Content),
+			ToolCalls: actionResp.ToolCalls,
+		}
+		session.Append(finalAssistMsg)
 
 		if actionResp.Content != "" && reporter != nil {
 			log.Printf("[🧠模型对外输出]: %s\n", actionResp.Content)
@@ -98,6 +106,12 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 					reporter.OnToolCall(ctx, call.Name, string(call.Arguments))
 				}
 				result := e.registry.Execute(ctx, call)
+				if result.IsError {
+					finalOutput := e.recovery.AnalyzeAndInject(call.Name, result.Output)
+					log.Printf(" -> [Go-%d] ❌ 注入救援指南: %s\n", idx, finalOutput)
+				} else {
+					log.Printf(" -> [Go-%d] ✅ 工具执行成功 (返回 %d 字节)\n", idx, len(result.Output))
+				}
 				if reporter != nil {
 					displayOut := result.Output
 					if len(displayOut) > 200 {
