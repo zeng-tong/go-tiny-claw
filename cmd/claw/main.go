@@ -114,22 +114,30 @@ func main() {
 	workDir, _ := os.Getwd()
 	workDir += "/workspace"
 	llmProvider := provider.NewGLMOpenAIProvider("deepseek-v4-flash")
-	// 挂载 4 大基础工具
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewReadFileTool(workDir))
-	registry.Register(tools.NewWriteFileTool(workDir))
-	registry.Register(tools.NewBashTool(workDir))
-	registry.Register(tools.NewEditFileTool(workDir))
+	reporter := engine.NewTerminalReporter()
+	// 【防御沙箱】
+	readOnlyRegistry := tools.NewRegistry()
+	readOnlyRegistry.Register(tools.NewReadFileTool(workDir))
+	readOnlyRegistry.Register(tools.NewBashTool(workDir))
+
+	// 全功能
+	mainRegistry := tools.NewRegistry()
+	mainRegistry.Register(tools.NewReadFileTool(workDir))
+	mainRegistry.Register(tools.NewWriteFileTool(workDir))
+	mainRegistry.Register(tools.NewBashTool(workDir))
+	mainRegistry.Register(tools.NewEditFileTool(workDir))
 
 	// 实例化引擎并开启计划模式 (PlanMode=true)
-	eng := engine.NewAgentEngine(llmProvider, registry, false, false)
+	eng := engine.NewAgentEngine(llmProvider, mainRegistry, false, false)
+	// 【核心装配】：将带有 Engine 引用和只读 Registry 的 Subagent 工具注册进主线
+	mainRegistry.Register(tools.NewSubagentTool(eng, readOnlyRegistry, reporter))
 
-	sessionID := "test_command_intercept_001"
+	sessionID := "test_subagent_001"
 	sess := ctxpkg.GlobalSessionManager.GetOrCreate(sessionID, workDir)
 	sess.Append(schema.Message{Role: schema.RoleUser, Content: ""})
 	bot := feishu.NewFeishuBot(eng, sess)
 	dispatcher := bot.GetEventDispatcher()
-	registry.Use(func(ctx context.Context, call schema.ToolCall) (allowed bool, rejectReason string) {
+	mainRegistry.Use(func(ctx context.Context, call schema.ToolCall) (allowed bool, rejectReason string) {
 		argsStr := string(call.Arguments)
 		if feishu.IsDangerousCommand(call.Name, argsStr) {
 			allowed, reason := feishu.GlobalApprovalManager.WaitForApproval(call.ID, call.Name, argsStr, bot.Reporter())
