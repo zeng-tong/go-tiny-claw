@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	ctxpkg "go-tiny-claw/internal/context"
 	"go-tiny-claw/internal/engine"
 	"go-tiny-claw/internal/provider"
@@ -99,30 +101,43 @@ func main() {
 // cmd/claw/main.go
 
 func main() {
+	promptPtr := flag.String("prompt", "", "要交给 Agent 执行的任务描述")
+	flag.Parse()
+	if *promptPtr == "" {
+		fmt.Println("用法: go run cmd/claw/main.go -prompt \"你的任务指令\"")
+		os.Exit(1)
+	}
 	if os.Getenv("GLM_API_KEY") == "" {
 		log.Fatal("请先导出 GLM_API_KEY 环境变量")
 	}
 	workDir, _ := os.Getwd()
+	workDir += "/workspace"
 	llmProvider := provider.NewGLMOpenAIProvider("deepseek-v4-flash")
+	// 挂载 4 大基础工具
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
-	// 引擎本身变成无状态的，它不绑定 WorkDir（仅适用于本讲演示）
-	eng := engine.NewAgentEngine(llmProvider, registry, false)
+	registry.Register(tools.NewEditFileTool(workDir))
+
+	// 实例化引擎并开启计划模式 (PlanMode=true)
+	eng := engine.NewAgentEngine(llmProvider, registry, false, true)
 	reporter := engine.NewTerminalReporter()
 
-	sessionID := "test_oom_protection_001"
+	// 我们使用一个固定的 SessionID，以便在多次运行之间共享基于内存的“短期工作记忆”。
+	// (在真实的 CLI 中，如果进程重启，Session 的内存历史其实是丢失的。
+	// 但这正是我们要演示的重点：即便短期内存丢失，只要 TODO.md 还在，任务就能继续！)
+	sessionID := "task_web_server_01"
 	sess := ctxpkg.GlobalSessionManager.GetOrCreate(sessionID, workDir)
-	prompt := ` 请帮我执行以下三个步骤： 
-		1. 使用 bash 执行 echo "开始排查日志" 
-		2. 使用 read_file 工具读取当前目录下的巨大文件 mock_log.txt 
-		3. 使用 bash 执行 date 命令获取当前时间，并告诉我任务全部完成。 
-	`
-	sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
 
+	log.Printf("\n>>> 🚀 收到指令: %s\n", *promptPtr)
+
+	// 将用户的 Prompt 压入 Session
+	sess.Append(schema.Message{Role: schema.RoleUser, Content: *promptPtr})
+
+	// 唤醒引擎执行
 	err := eng.Run(context.Background(), sess, reporter)
 	if err != nil {
-		log.Fatalf("引擎运行崩溃：%v", err)
+		log.Fatalf("引擎运行崩溃: %v", err)
 	}
 }

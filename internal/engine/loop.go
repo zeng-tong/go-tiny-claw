@@ -15,16 +15,16 @@ type AgentEngine struct {
 	provider       provider.LLMProvider
 	registry       tools.Registry
 	EnableThinking bool
-	composer       *ctxpkg.PromptComposer
 	compactor      *ctxpkg.Compactor
+	planMode       bool
 }
 
-func NewAgentEngine(provider provider.LLMProvider, registry tools.Registry /* workDir string,*/, enableThinking bool) *AgentEngine {
+func NewAgentEngine(provider provider.LLMProvider, registry tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
 	return &AgentEngine{
 		provider:  provider,
 		registry:  registry,
-		composer:  ctxpkg.NewPromptComposer("."), // 初始化组装器
 		compactor: ctxpkg.NewCompactor(3000, 6),
+		planMode:  planMode,
 	}
 }
 
@@ -33,7 +33,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 	log.Printf("[Engine] 慢思考模式(thinking phase): %v", e.EnableThinking)
 
 	// 动态 Prompt 组装器加载 AGENTS.md
-	composer := ctxpkg.NewPromptComposer(session.WorkDir)
+	composer := ctxpkg.NewPromptComposer(session.WorkDir, e.planMode)
 	systemMsg := composer.Build()
 
 	// main loop
