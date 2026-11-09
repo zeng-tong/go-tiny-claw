@@ -5,6 +5,7 @@ import (
 	"log"
 	"regexp"
 	"sync"
+	"time"
 )
 
 type ApprovalResult struct {
@@ -33,7 +34,8 @@ func (m *ApprovalManager) WaitForApproval(taskID string, toolName string, args s
 	noticeMsg := fmt.Sprintf(`⚠️ **高危操作审批请求**
 		Agent 试图执行以下动作:
 		- 工具: %s
-		- 参数: %s任务 ID: **%s**
+		- 参数: %s
+		- 任务 ID: **%s**
 		👉 请在此消息下方回复 "approve %s" 或 "reject %s" 来决定是否放行。`, toolName, args, taskID, taskID, taskID)
 	if reporter != nil {
 		reporter.sendMsg(noticeMsg)
@@ -42,11 +44,27 @@ func (m *ApprovalManager) WaitForApproval(taskID string, toolName string, args s
 	}
 	log.Printf("[Approval] 已发送审批请求 (TaskID: %s)，协程挂起等待...\n", taskID)
 	// 3. 【驾驭核心】：死死阻塞，等待飞书 Webhook 唤醒！
-	result := <-ch
-	m.mu.Lock()
-	delete(m.pendingTasks, taskID)
-	m.mu.Unlock()
-	return result.Allowed, result.Reason
+	timeout := time.Second * 30
+	select {
+	case result := <-ch:
+		m.mu.Lock()
+		delete(m.pendingTasks, taskID)
+		m.mu.Unlock()
+		return result.Allowed, result.Reason
+	case <-time.After(timeout):
+		m.mu.Lock()
+		delete(m.pendingTasks, taskID)
+		m.mu.Unlock()
+		if reporter != nil {
+			reporter.sendMsg(fmt.Sprintf(`⚠️**由于您超时未确认，已默认拒绝此危险操作！**
+			- 工具: %s
+			- 参数: %s
+			- 任务 ID：**%s**
+			`, toolName, args, taskID))
+		}
+		return false, "用户超时未确认，默认拒绝危险操作！"
+	}
+	return false, "异常情况，默认拒绝危险操作，可发起重试。"
 }
 
 func (m *ApprovalManager) ResolveApproval(taskID string, allowed bool, reason string) {
